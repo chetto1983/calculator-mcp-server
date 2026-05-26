@@ -4,24 +4,37 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "calculator-mcp-server"
-version = "1.0.0"
+version = "1.1.0"
 description = "A server for complex mathematical calculations"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 dependencies = [
-    "fastmcp>=0.4.1",
+    "mcp[cli]>=1.27.0",
     "numpy>=2.2.0",
     "scipy>=1.15.0",
     "sympy>=1.13.0",
-    "matplotlib",
-    "pydantic>=2.10.0",
+    "matplotlib>=3.10.0",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.3.0"]
+dev = [
+    "pytest>=8.3.0",
+    "ruff>=0.14.0",
+]
 
 [project.scripts]
 calculator-mcp-server = "calculator_server:main"
 
 [tool.setuptools]
 py-modules = ["calculator_server"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]

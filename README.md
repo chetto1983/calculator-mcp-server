@@ -1,6 +1,6 @@
 # Mathematical Calculator MCP Server
 
-This is a Model Context Protocol (MCP) server that provides Claude with advanced mathematical calculation capabilities, including symbolic math, statistical analysis, and matrix operations.
+This is a Model Context Protocol (MCP) server that provides advanced mathematical calculation capabilities, including symbolic math, statistical analysis, matrix operations, vector operations, and headless function plotting.
 
 ## Features
 
@@ -21,20 +21,27 @@ The Mathematical Calculator MCP Server provides the following tools:
   - Matrix addition
   - Matrix multiplication
   - Matrix transposition
+  - Matrix determinant
+- **Vector Operations**:
+  - Dot product
+  - Cross product
+  - Magnitude
+- **Plotting**:
+  - Headless function plot generation with a PNG render check
 
 ## Installation
 
 ### Prerequisites
 
-- Python 3.10+ (recommended: Python 3.11+)
+- Python 3.11+
 - [uv](https://github.com/astral-sh/uv) (recommended) or pip
-- Claude Desktop app (to use the MCP server with Claude)
+- Any MCP host that supports stdio servers
 
 ### Installation Steps
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/huhabla/calculator-mcp-server.git
+   git clone https://github.com/chetto1983/calculator-mcp-server.git
    cd calculator-mcp-server
    ```
 
@@ -48,7 +55,7 @@ The Mathematical Calculator MCP Server provides the following tools:
    ```bash
    python3 -m venv venv
    source venv/bin/activate
-   pip install -r requirements.txt
+   pip install -e ".[dev]"
    ```
 
 3. Run doc-tests to verify everything works:
@@ -74,7 +81,7 @@ Add the following to the `mcpServers` section:
       "command": "uvx",
       "args": [
         "--from",
-        "calculator-mcp-server@git+https://github.com/huhabla/calculator-mcp-server.git",
+        "calculator-mcp-server@git+https://github.com/chetto1983/calculator-mcp-server.git",
         "--",
         "calculator-mcp-server",
         "--stdio"
@@ -84,20 +91,20 @@ Add the following to the `mcpServers` section:
 }
 ```
 
-**Note**: The `--stdio` flag is required for proper integration with Claude Desktop. The `--` separates uvx arguments from the calculator server arguments.
+**Note**: The server defaults to stdio. The `--stdio` flag is accepted for explicit host configuration, and `--sse` is available for local SSE experiments. The `--` separates uvx arguments from the calculator server arguments.
 
-### Method 2: Install with FastMCP
+### Method 2: Install with the MCP CLI
 
 1. Make sure you have uv installed ([Installation Guide](https://github.com/astral-sh/uv))
 
 2. Install the MCP server in Claude Desktop:
    ```bash
-   fastmcp install calculator_server.py
+   mcp install calculator_server.py
    ```
 
    Or with a custom name:
    ```bash
-   fastmcp install calculator_server.py --name "Math Calculator"
+   mcp install calculator_server.py --name "Math Calculator"
    ```
 
 3. Once installed, Claude will automatically have access to all the mathematical tools and functions.
@@ -149,6 +156,16 @@ and
 [11, 12]
 ```
 
+### Vector Operations
+```
+Compute the dot product of [1, 2, 3] and [4, 5, 6].
+```
+
+### Function Plotting
+```
+Plot y = x^2 from -2 to 2.
+```
+
 ## Development
 
 ### Testing
@@ -158,11 +175,21 @@ Run the comprehensive doctest suite:
 bash run_doctests.sh
 ```
 
+Run the pytest suite:
+```bash
+python -m pytest
+```
+
+Run linting:
+```bash
+ruff check .
+```
+
 ### Interactive Development Mode
 
-For development and debugging, you can use the FastMCP development mode:
+For development and debugging, you can use the MCP development mode:
 ```bash
-fastmcp dev calculator_server.py
+mcp dev calculator_server.py
 ```
 
 This will start a local web interface where you can test all tools interactively.
@@ -173,6 +200,6 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## Acknowledgements
 
-- [FastMCP](https://github.com/jlowin/fastmcp) for the Pythonic MCP server framework
+- [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) for the FastMCP server framework
 - [SymPy](https://sympy.org/) for symbolic mathematics
 - [NumPy](https://numpy.org/) and [SciPy](https://scipy.org/) for numerical and statistical computations

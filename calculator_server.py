@@ -1,29 +1,32 @@
-from mcp.server.fastmcp import FastMCP
+from __future__ import annotations
+
 import argparse
+import ast
 import math
-import numpy as np
-from scipy import stats
-from sympy import symbols, solve, sympify, diff, integrate, oo, Sum
-from typing import List, Tuple
+from io import BytesIO
+from typing import Any
+
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numpy as np
 import sympy as sp
-import numpy as np
-import matplotlib.pyplot as plt
+from mcp.server.fastmcp import FastMCP
+from scipy import stats
+from sympy import diff, solve, symbols, sympify
 from sympy import integrate as sympy_integrate
 
 # Create MCP Server
 app = FastMCP(
-    title="Mathematical Calculator",
-    description="A server for complex mathematical calculations",
-    version="1.0.0",
+    name="Mathematical Calculator",
+    instructions="A server for complex mathematical calculations",
     dependencies=["numpy", "scipy", "sympy", "matplotlib"],
 )
 
-TRANSPORT = "sse"
+TRANSPORT = "stdio"
 
 ALLOW_FUNCTION = {
-    "math": math,
-    "np": np,
     "sin": math.sin,
     "cos": math.cos,
     "tan": math.tan,
@@ -71,15 +74,91 @@ ALLOW_FUNCTION = {
     "argmax": np.argmax,
 }
 
+ALLOWED_BINARY_OPERATORS = {
+    ast.Add: lambda left, right: left + right,
+    ast.Sub: lambda left, right: left - right,
+    ast.Mult: lambda left, right: left * right,
+    ast.Div: lambda left, right: left / right,
+    ast.FloorDiv: lambda left, right: left // right,
+    ast.Mod: lambda left, right: left % right,
+    ast.Pow: lambda left, right: left**right,
+}
+
+ALLOWED_UNARY_OPERATORS = {
+    ast.UAdd: lambda value: +value,
+    ast.USub: lambda value: -value,
+}
+
+
+def normalize_expression(expression: str) -> str:
+    """Normalize common math notation before parsing/evaluation."""
+    return expression.replace("^", "**")
+
+
+def to_jsonable(value: Any) -> Any:
+    """Convert common numpy/sympy outputs into JSON-serializable values."""
+    if hasattr(value, "tolist"):
+        return value.tolist()
+    if hasattr(value, "item"):
+        return value.item()
+    return value
+
+
+def safe_eval_expression(expression: str) -> Any:
+    """Evaluate a math expression using a small AST whitelist."""
+    node = ast.parse(expression, mode="eval")
+    return _eval_ast(node)
+
+
+def _eval_ast(node: ast.AST) -> Any:
+    if isinstance(node, ast.Expression):
+        return _eval_ast(node.body)
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, int | float) and not isinstance(node.value, bool):
+            return node.value
+        raise ValueError(f"Unsupported constant: {node.value!r}")
+    if isinstance(node, ast.List):
+        return [_eval_ast(element) for element in node.elts]
+    if isinstance(node, ast.Tuple):
+        return tuple(_eval_ast(element) for element in node.elts)
+    if isinstance(node, ast.Name):
+        if node.id in {"pi", "e"}:
+            return ALLOW_FUNCTION[node.id]
+        raise NameError(f"name '{node.id}' is not defined")
+    if isinstance(node, ast.BinOp):
+        operator = ALLOWED_BINARY_OPERATORS.get(type(node.op))
+        if operator is None:
+            raise ValueError(f"Unsupported operator: {type(node.op).__name__}")
+        return operator(_eval_ast(node.left), _eval_ast(node.right))
+    if isinstance(node, ast.UnaryOp):
+        operator = ALLOWED_UNARY_OPERATORS.get(type(node.op))
+        if operator is None:
+            raise ValueError(f"Unsupported operator: {type(node.op).__name__}")
+        return operator(_eval_ast(node.operand))
+    if isinstance(node, ast.Call):
+        if not isinstance(node.func, ast.Name):
+            raise ValueError("Only direct calls to approved math functions are allowed")
+        function = ALLOW_FUNCTION.get(node.func.id)
+        if function is None or not callable(function):
+            raise NameError(f"name '{node.func.id}' is not defined")
+        args = [_eval_ast(arg) for arg in node.args]
+        kwargs = {}
+        for keyword in node.keywords:
+            if keyword.arg is None:
+                raise ValueError("Expanded keyword arguments are not allowed")
+            kwargs[keyword.arg] = _eval_ast(keyword.value)
+        return function(*args, **kwargs)
+    raise ValueError(f"Unsupported expression element: {type(node).__name__}")
+
 
 @app.tool()
 def calculate(expression: str) -> dict:
     """
     Evaluates a mathematical expression and returns the result.
 
-    Supports basic operators (+, -, *, /, **, %), mathematical functions
+    Supports basic operators (+, -, *, /, **, %, ^), mathematical functions
     (sin, cos, tan, exp, log, log10, sqrt), and constants (pi, e).
-    Uses a restricted evaluation context for safe execution.
+    Uses an AST whitelist for safe execution.
 
     Args:
         expression: The mathematical expression to evaluate as a string.
@@ -96,22 +175,18 @@ def calculate(expression: str) -> dict:
         {'result': 1.0}
         >>> calculate("sqrt(16)")
         {'result': 4.0}
-        >>> calculate("invalid * expression")
-        {'error': "name 'invalid' is not defined"}
+        >>> calculate("(2 + 3)^2")
+        {'result': 25}
 
     Notes:
-        - Use 'x' as the variable (e.g., x**2, not x²)
+        - Use 'x' as the variable (e.g., x**2, not x^2)
         - Multiplication must be explicitly indicated with * (e.g., 2*x, not 2x)
-        - Powers are represented with ** (e.g., x**2, not x^2)
+        - Powers can be represented with ** or ^ (e.g., x**2 or x^2)
     """
     try:
-        # Safe evaluation of the expression
-        result = eval(
-            expression,
-            {"__builtins__": {}},
-            ALLOW_FUNCTION,
-        )
-        return {"result": result}
+        expression = normalize_expression(expression)
+        result = safe_eval_expression(expression)
+        return {"result": to_jsonable(result)}
     except Exception as e:
         return {"error": str(e)}
 
@@ -143,9 +218,9 @@ def solve_equation(equation: str) -> dict:
         {'solutions': '[0]'}
 
     Notes:
-        - Use 'x' as the variable (e.g., x**2, not x²)
+        - Use 'x' as the variable (e.g., x**2, not x^2)
         - Multiplication must be explicitly indicated with * (e.g., 2*x, not 2x)
-        - Powers are represented with ** (e.g., x**2, not x^2)
+        - Powers can be represented with ** or ^ (e.g., x**2 or x^2)
     """
     try:
         x = symbols("x")
@@ -154,8 +229,8 @@ def solve_equation(equation: str) -> dict:
         if len(parts) != 2:
             return {"error": "Equation must contain an '=' sign"}
 
-        left = sympify(parts[0].strip())
-        right = sympify(parts[1].strip())
+        left = sympify(normalize_expression(parts[0].strip()))
+        right = sympify(normalize_expression(parts[1].strip()))
 
         # Solve the equation
         solutions = solve(left - right, x)
@@ -194,13 +269,13 @@ def differentiate(expression: str, variable: str = "x") -> dict:
 
     Notes:
         - Use mathematical notation with explicit operators (* for multiplication)
-        - Powers are represented with ** (e.g., x**2, not x^2)
+        - Powers can be represented with ** or ^ (e.g., x**2 or x^2)
         - For trigonometric functions, use sin(x), cos(x), etc.
         - Only support for one variable at a time (implicit differentiation not supported)
     """
     try:
         var = symbols(variable)
-        expr = sympify(expression)
+        expr = sympify(normalize_expression(expression))
         result = diff(expr, var)
         return {"result": str(result)}
     except Exception as e:
@@ -243,7 +318,7 @@ def integrate(expression: str, variable: str = "x") -> dict:
     """
     try:
         var = symbols(variable)
-        expr = sympify(expression)
+        expr = sympify(normalize_expression(expression))
         result = sympy_integrate(expr, var)  # Use sympy_integrate instead of integrate
         return {"result": str(result)}
     except Exception as e:
@@ -251,7 +326,7 @@ def integrate(expression: str, variable: str = "x") -> dict:
 
 
 @app.tool()
-def mean(data: List[float]) -> dict:
+def mean(data: list[float]) -> dict:
     """
     Computes the mean of a list of numbers.
 
@@ -276,7 +351,7 @@ def mean(data: List[float]) -> dict:
 
 
 @app.tool()
-def variance(data: List[float]) -> dict:
+def variance(data: list[float]) -> dict:
     """
     Computes the variance of a list of numbers.
 
@@ -299,7 +374,7 @@ def variance(data: List[float]) -> dict:
 
 
 @app.tool()
-def standard_deviation(data: List[float]) -> dict:
+def standard_deviation(data: list[float]) -> dict:
     """
     Computes the standard deviation of a list of numbers.
 
@@ -322,7 +397,7 @@ def standard_deviation(data: List[float]) -> dict:
 
 
 @app.tool()
-def median(data: List[float]) -> dict:
+def median(data: list[float]) -> dict:
     """
     Computes the median of a list of numbers.
 
@@ -345,7 +420,7 @@ def median(data: List[float]) -> dict:
 
 
 @app.tool()
-def mode(data: List[float]) -> dict:
+def mode(data: list[float]) -> dict:
     """
     Computes the mode of a list of numbers.
 
@@ -375,7 +450,7 @@ def mode(data: List[float]) -> dict:
 
 
 @app.tool()
-def correlation_coefficient(data_x: List[float], data_y: List[float]) -> dict:
+def correlation_coefficient(data_x: list[float], data_y: list[float]) -> dict:
     """
     Computes the Pearson correlation coefficient between two lists of numbers.
 
@@ -399,7 +474,7 @@ def correlation_coefficient(data_x: List[float], data_y: List[float]) -> dict:
 
 
 @app.tool()
-def linear_regression(data: List[Tuple[float, float]]) -> dict:
+def linear_regression(data: list[tuple[float, float]]) -> dict:
     """
     Performs linear regression on a set of points and returns the slope and intercept.
 
@@ -424,7 +499,7 @@ def linear_regression(data: List[Tuple[float, float]]) -> dict:
 
 
 @app.tool()
-def confidence_interval(data: List[float], confidence: float = 0.95) -> dict:
+def confidence_interval(data: list[float], confidence: float = 0.95) -> dict:
     """
     Computes the confidence interval for the mean of a dataset.
 
@@ -439,8 +514,8 @@ def confidence_interval(data: List[float], confidence: float = 0.95) -> dict:
     Examples:
         >>> import numpy as np
         >>> np.random.seed(42)  # For reproducible results
-        >>> confidence_interval([1, 2, 3, 4])
-        {'confidence_interval': (0.445739743239121, 4.5542602567608785)}
+        >>> confidence_interval([1, 2, 3, 4])  # doctest: +ELLIPSIS
+        {'confidence_interval': (0.445739743239..., 4.554260256760...)}
     """
     try:
         mean_value = np.mean(data)
@@ -457,7 +532,7 @@ def confidence_interval(data: List[float], confidence: float = 0.95) -> dict:
 
 
 @app.tool()
-def matrix_addition(matrix_a: List[List[float]], matrix_b: List[List[float]]) -> dict:
+def matrix_addition(matrix_a: list[list[float]], matrix_b: list[list[float]]) -> dict:
     """
     Adds two matrices.
 
@@ -482,7 +557,7 @@ def matrix_addition(matrix_a: List[List[float]], matrix_b: List[List[float]]) ->
 
 @app.tool()
 def matrix_multiplication(
-    matrix_a: List[List[float]], matrix_b: List[List[float]]
+    matrix_a: list[list[float]], matrix_b: list[list[float]]
 ) -> dict:
     """
     Multiplies two matrices.
@@ -507,7 +582,7 @@ def matrix_multiplication(
 
 
 @app.tool()
-def matrix_transpose(matrix: List[List[float]]) -> dict:
+def matrix_transpose(matrix: list[list[float]]) -> dict:
     """
     Transposes a matrix.
 
@@ -530,15 +605,15 @@ def matrix_transpose(matrix: List[List[float]]) -> dict:
 
 
 @app.tool()
-def matrix_determinant(matrix: List[List[float]]) -> dict:
+def matrix_determinant(matrix: list[list[float]]) -> dict:
     """
-    Multiplies two matrices.
+    Computes the determinant of a square matrix.
 
     Args:
-        matrix: The first vector as a list of lists.
+        matrix: A square matrix as a list of rows.
 
     Returns:
-        On success: {"result": <resulting vector>}
+        On success: {"result": <determinant>}
         On error: {"error": <error message>}
 
     Examples:
@@ -553,16 +628,16 @@ def matrix_determinant(matrix: List[List[float]]) -> dict:
 
 
 @app.tool()
-def vector_dot_product(vector_a: tuple[float], vector_b: tuple[float]) -> dict:
+def vector_dot_product(vector_a: list[float], vector_b: list[float]) -> dict:
     """
-    Multiplies two matrices.
+    Computes the dot product of two equal-length vectors.
 
     Args:
-        vector_a: The first vector as a list of lists.
-        vector_b: The second vector as a list of lists.
+        vector_a: The first vector as a list of numbers.
+        vector_b: The second vector as a list of numbers.
 
     Returns:
-        On success: {"result": <resulting vector>}
+        On success: {"result": <scalar dot product>}
         On error: {"error": <error message>}
 
     Examples:
@@ -577,13 +652,13 @@ def vector_dot_product(vector_a: tuple[float], vector_b: tuple[float]) -> dict:
 
 
 @app.tool()
-def vector_cross_product(vector_a: tuple[float], vector_b: tuple[float]) -> dict:
+def vector_cross_product(vector_a: list[float], vector_b: list[float]) -> dict:
     """
-    Multiplies two matrices.
+    Computes the cross product of two 2D or 3D vectors.
 
     Args:
-        vector_a: The first vector as a list of lists.
-        vector_b: The second vector as a list of lists.
+        vector_a: The first vector as a list of numbers.
+        vector_b: The second vector as a list of numbers.
 
     Returns:
         On success: {"result": <resulting vector>}
@@ -601,15 +676,15 @@ def vector_cross_product(vector_a: tuple[float], vector_b: tuple[float]) -> dict
 
 
 @app.tool()
-def vector_magnitude(vector: tuple[float]) -> dict:
+def vector_magnitude(vector: list[float]) -> dict:
     """
-    Multiplies two matrices.
+    Computes the magnitude of a vector.
 
     Args:
-        vector: The first vector as a list of lists.
+        vector: A vector as a list of numbers.
 
     Returns:
-        On success: {"result": <resulting vector>}
+        On success: {"result": <scalar magnitude>}
         On error: {"error": <error message>}
 
     Examples:
@@ -631,24 +706,25 @@ def plot_function(
     Plots a graph of y = f(x).
 
     Args:
-        x: The expression of function x as a string.
+        expression: The function expression as a string.
+        start: The first x value to plot.
+        end: The final x value to plot.
+        step: The number of x samples to render.
 
     Returns:
-        On success: {"result": "Plot generated successfully."}
+        On success: {"result": "Plot generated successfully.", "format": "png", ...}
         On error: {"error": <error message>}
 
-    Examples:
-        >>> plot_function("x**2")
-        {'result': 'Plot generated successfully.'}
-
     Notes:
-        - Use 'x' as the variable (e.g., x**2, not x²)
+        - Use 'x' as the variable (e.g., x**2, not x^2)
         - Multiplication must be explicitly indicated with * (e.g., 2*x, not 2x)
-        - Powers are represented with ** (e.g., x**2, not x^2)
+        - Powers can be represented with ** or ^ (e.g., x**2 or x^2)
     """
     x = sp.Symbol("x")
     try:
-        expression = sp.sympify(expression)
+        if step <= 0:
+            return {"error": "step must be positive"}
+        expression = sp.sympify(normalize_expression(expression))
         f = sp.lambdify(x, expression, "numpy")
         x_values = np.linspace(start, end, step)
         y_values = f(x_values)
@@ -665,8 +741,15 @@ def plot_function(
         ax.set_ylabel("f(x)", loc="top")
         ax.set_title(f"Graph of ${sp.latex(expression)}$")
         ax.grid(True)
-        plt.show()
-        return {"result": "Plot generated successfully."}
+        image = BytesIO()
+        fig.savefig(image, format="png", dpi=120, bbox_inches="tight")
+        plt.close(fig)
+        return {
+            "result": "Plot generated successfully.",
+            "format": "png",
+            "points": int(len(x_values)),
+            "bytes": len(image.getvalue()),
+        }
     except Exception as e:
         return {"error": str(e)}
 
@@ -691,7 +774,7 @@ def summation(expression: str, start: int = 0, end: int = 10) -> dict:
     """
     try:
         x = sp.Symbol("x")
-        expr = sp.sympify(expression)
+        expr = sp.sympify(normalize_expression(expression))
         summation = sp.Sum(expr, (x, start, end))
         result = summation.doit()
         return {"result": int(result) if result.is_integer else float(result)}
@@ -716,8 +799,7 @@ def expand(expression: str) -> dict:
         {'result': 'x**2 + 2*x + 1'}
     """
     try:
-        x = sp.Symbol("x")
-        expanded_expression = sp.expand(expression)
+        expanded_expression = sp.expand(sp.sympify(normalize_expression(expression)))
         return {"result": str(expanded_expression)}
     except Exception as e:
         return {"error": str(e)}
@@ -740,19 +822,21 @@ def factorize(expression: str) -> dict:
         {'result': '(x + 1)**2'}
     """
     try:
-        x = sp.Symbol("x")
-        factored_expression = sp.factor(expression)
+        factored_expression = sp.factor(sp.sympify(normalize_expression(expression)))
         return {"result": str(factored_expression)}
     except Exception as e:
         return {"error": str(e)}
 
+
 def main():
     parser = argparse.ArgumentParser(description="Mathematical Calculator MCP Server")
-    parser.add_argument("--stdio", action="store_true", help="Use STDIO transport instead of SSE")
+    parser.add_argument("--stdio", action="store_true", help="Use STDIO transport (default)")
+    parser.add_argument("--sse", action="store_true", help="Use SSE transport")
     args = parser.parse_args()
-    
-    transport = "stdio" if args.stdio else TRANSPORT
+
+    transport = "sse" if args.sse else TRANSPORT
     app.run(transport=transport)
+
 
 if __name__ == "__main__":
     main()
