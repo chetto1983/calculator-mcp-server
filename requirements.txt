@@ -1,4 +1,5 @@
-mcp[cli]>=1.27.0
+# See pyproject.toml: mcp 2.0.0 dropped mcp.server.fastmcp (FastMCP -> MCPServer).
+mcp[cli]>=1.27.0,<2
 numpy>=2.2.0
 scipy>=1.15.0
 sympy>=1.13.0

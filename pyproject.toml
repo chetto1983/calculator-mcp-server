@@ -4,12 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "calculator-mcp-server"
-version = "1.1.0"
+version = "1.1.1"
 description = "A server for complex mathematical calculations"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "mcp[cli]>=1.27.0",
+    # Ceiling, not decoration: this server imports the SDK BY MODULE PATH
+    # (`mcp.server.fastmcp.FastMCP`), and 2.0.0 — published with the 2026-07-28 spec —
+    # removed that module and renamed FastMCP to MCPServer. With an open range every
+    # `uvx` run re-resolves, so the release alone broke installs that had not changed a
+    # line. Lift the cap only together with the v2 migration in calculator_server.py.
+    "mcp[cli]>=1.27.0,<2",
     "numpy>=2.2.0",
     "scipy>=1.15.0",
     "sympy>=1.13.0",
